@@ -14,15 +14,60 @@ DECLARE_WEAK_LOCK(__wasilibc_cwd_lock, extern);
 extern char *__wasilibc_cwd;
 static int __wasilibc_cwd_mallocd = 0;
 
+static const char *make_absolute(const char *path);
+
+// Removes "." components, repeated slashes and ".." components from the
+// absolute path `path` in place. A ".." removes the component before it, as a
+// shell's `cd` does, and stays at the root when there is none.
+static void normalize(char *path) {
+  char *out = path;
+  const char *in = path;
+  while (*in != 0) {
+    while (*in == '/')
+      in++;
+    const char *end = in;
+    while (*end != 0 && *end != '/')
+      end++;
+    size_t len = end - in;
+
+    if (len == 2 && in[0] == '.' && in[1] == '.') {
+      while (out > path && *--out != '/')
+        ;
+    } else if (len > 0 && !(len == 1 && in[0] == '.')) {
+      *out++ = '/';
+      memmove(out, in, len);
+      out += len;
+    }
+    in = end;
+  }
+  if (out == path)
+    *out++ = '/';
+  *out = 0;
+}
+
 int chdir(const char *path) {
   static char *relative_buf = NULL;
   static size_t relative_buf_len = 0;
 
+  // `getcwd` must not return "." or ".." components. Removing them before the
+  // lookup means the directory checked below is the one the new working
+  // directory names.
+  WEAK_LOCK(__wasilibc_cwd_lock);
+  const char *absolute = make_absolute(path);
+  char *normalized = absolute == NULL ? NULL : strdup(absolute);
+  WEAK_UNLOCK(__wasilibc_cwd_lock);
+  if (normalized == NULL) {
+    errno = ENOMEM;
+    return -1;
+  }
+  normalize(normalized);
+
   // Find a preopen'd directory as well as a relative path we're anchored
   // from which we're changing directories to.
   const char *abs;
-  int parent_fd = __wasilibc_find_relpath_alloc(path, &abs, &relative_buf,
+  int parent_fd = __wasilibc_find_relpath_alloc(normalized, &abs, &relative_buf,
                                                 &relative_buf_len, 1);
+  free(normalized);
   if (parent_fd == -1)
     return -1;
 

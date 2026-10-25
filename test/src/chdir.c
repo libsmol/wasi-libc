@@ -1,10 +1,12 @@
 #include "test.h"
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #define TEST(c)                                                                \
   do {                                                                         \
@@ -16,6 +18,20 @@
 static int exists(const char *path) {
   struct stat st;
   return stat(path, &st) == 0;
+}
+
+// Checks that the working directory is `below` under `start`.
+static void expect_cwd(const char *start, const char *below) {
+  char expected[PATH_MAX];
+  char actual[PATH_MAX];
+  int root = strcmp(start, "/") == 0;
+  snprintf(expected, sizeof(expected), "%s%s", root ? "" : start, below);
+  if (expected[0] == 0)
+    strcpy(expected, "/");
+
+  TEST(getcwd(actual, sizeof(actual)) != NULL);
+  if (strcmp(actual, expected) != 0)
+    t_error("getcwd: expected \"%s\", got \"%s\"\n", expected, actual);
 }
 
 static void spray_heap(void) {
@@ -33,6 +49,9 @@ static void spray_heap(void) {
 
 int main(void) {
   spray_heap();
+
+  char start[PATH_MAX];
+  TEST(getcwd(start, sizeof(start)) != NULL);
 
   int fd;
   TEST(mkdir("a", 0755) == 0);
@@ -94,6 +113,25 @@ int main(void) {
   TEST(exists("../a2.txt"));
   TEST(exists("a3.txt"));
   TEST(exists("c/a4.txt"));
+  expect_cwd(start, "/a/b");
+
+  // The working directory never keeps "." or ".." components
+  TEST(chdir("..") == 0);
+  expect_cwd(start, "/a");
+  TEST(exists("a2.txt"));
+
+  TEST(chdir("./b/../b/.//c/") == 0);
+  expect_cwd(start, "/a/b/c");
+  TEST(exists("a4.txt"));
+
+  TEST(chdir("../../..") == 0);
+  expect_cwd(start, "");
+  TEST(exists("a1.txt"));
+
+  TEST(chdir("a/../a/b/c") == 0);
+  TEST(chdir("../../../a") == 0);
+  expect_cwd(start, "/a");
+  TEST(exists("a2.txt"));
 
   return t_status;
 }
